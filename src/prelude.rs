@@ -7,8 +7,11 @@ pub trait Queue<T> {
     fn push(&self, value: T);
 
     /// Removes an item from the queue
-    fn pop(&self) -> Option<T>;
+    fn pop(&self) -> T;
 
     /// Returns the size of the queue
-    fn size(&self) -> usize;
+    fn len(&self) -> usize;
+
+    /// checks if the queue is empty
+    fn is_empty(&self) -> bool;
 }

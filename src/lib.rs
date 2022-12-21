@@ -1,7 +1,12 @@
-use std::{collections::VecDeque, sync::Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{Condvar, Mutex},
+};
 
 use self::prelude::Queue;
 
+/// Includes generic traits
+// this might be overkill for such a small project :)
 pub mod prelude;
 
 /// A FIFO queue implemented using a VecDeque and a Mutex
@@ -9,6 +14,7 @@ pub mod prelude;
 pub struct FifoQueue<T> {
     /// The underlying data structure of the queue
     data: Mutex<VecDeque<T>>,
+    cv: Condvar,
 }
 
 impl<T> Queue<T> for FifoQueue<T> {
@@ -16,26 +22,39 @@ impl<T> Queue<T> for FifoQueue<T> {
     fn new() -> Self {
         Self {
             data: Mutex::new(VecDeque::new()),
+            cv: Condvar::new(),
         }
     }
 
     /// Adds an element to the back of the queue
     fn push(&self, value: T) {
         let mut data = self.data.lock().unwrap();
-        data.push_back(value)
+        data.push_back(value);
+        self.cv.notify_one();
     }
 
     /// Removes an element from the front of the queue
     /// Returns None if the queue is empty
-    fn pop(&self) -> Option<T> {
+    fn pop(&self) -> T {
         let mut data = self.data.lock().unwrap();
-        data.pop_front()
+
+        while data.is_empty() {
+            data = self.cv.wait(data).unwrap();
+        }
+
+        data.pop_front().unwrap()
     }
 
     /// Returns the size of the queue
-    fn size(&self) -> usize {
+    fn len(&self) -> usize {
         let data = self.data.lock().unwrap();
         data.len()
+    }
+
+    /// Checks if the queue is empty
+    fn is_empty(&self) -> bool {
+        let data = self.data.lock().unwrap();
+        data.is_empty()
     }
 }
 
@@ -44,6 +63,30 @@ mod test {
     use crate::prelude::*;
     use crate::FifoQueue;
     use std::{sync::Arc, thread};
+
+    #[test]
+    fn test_basic_functionalities() {
+        let queue = FifoQueue::new();
+
+        // Test push and pop
+        queue.push(1);
+        queue.push(2);
+        queue.push(3);
+
+        assert_eq!(queue.pop(), 1);
+        assert_eq!(queue.pop(), 2);
+        assert_eq!(queue.pop(), 3);
+
+        // Test size and is_empty
+        assert_eq!(queue.len(), 0);
+        assert!(queue.is_empty());
+
+        queue.push(4);
+        queue.push(5);
+
+        assert_eq!(queue.len(), 2);
+        assert!(!queue.is_empty());
+    }
 
     #[test]
     fn test_queue_thread_safety() {
@@ -65,41 +108,56 @@ mod test {
         t1.join().unwrap();
         t2.join().unwrap();
 
-        assert_eq!(queue.size(), 4);
-    }
-}
-
-/// A NON-FIFO queue implemented using a VecDeque and a Mutex
-#[derive(Debug)]
-struct NonFifoQueue<T> {
-    /// The underlying data structure of the queue
-    data: Mutex<VecDeque<T>>,
-}
-
-impl<T> Queue<T> for NonFifoQueue<T> {
-    /// Creates a new, empty queue
-    fn new() -> Self {
-        Self {
-            data: Mutex::new(VecDeque::new()),
-        }
+        assert_eq!(queue.len(), 4);
     }
 
-    /// Adds an element to the front of the queue
-    fn push(&self, value: T) {
-        let mut data = self.data.lock().unwrap();
-        data.push_front(value)
+    #[test]
+    fn test_concurrent_pushes_and_pops() {
+        let queue = Arc::new(FifoQueue::new());
+
+        let queue1 = queue.clone();
+        let handle1 = thread::spawn(move || {
+            for i in 0..1000 {
+                queue1.push(i);
+            }
+        });
+
+        let queue2 = queue.clone();
+        let handle2 = thread::spawn(move || {
+            for _ in 0..1000 {
+                queue2.pop();
+            }
+        });
+
+        handle1.join().unwrap();
+        handle2.join().unwrap();
+
+        assert!(queue.is_empty());
     }
 
-    /// Removes an element from the back of the queue
-    /// Returns None if the queue is empty
-    fn pop(&self) -> Option<T> {
-        let mut data = self.data.lock().unwrap();
-        data.pop_back()
-    }
+    #[test]
+    fn test_concurrent_mixed_operations() {
+        let queue = Arc::new(FifoQueue::new());
 
-    /// Returns the size of the queue
-    fn size(&self) -> usize {
-        let data = self.data.lock().unwrap();
-        data.len()
+        let queue1 = queue.clone();
+        let handle1 = thread::spawn(move || {
+            for i in 0..1000 {
+                queue1.push(i);
+                queue1.pop();
+            }
+        });
+
+        let queue2 = queue.clone();
+        let handle2 = thread::spawn(move || {
+            for i in 0..1000 {
+                queue2.push(i);
+                queue2.pop();
+            }
+        });
+
+        handle1.join().unwrap();
+        handle2.join().unwrap();
+
+        assert!(queue.is_empty());
     }
 }
